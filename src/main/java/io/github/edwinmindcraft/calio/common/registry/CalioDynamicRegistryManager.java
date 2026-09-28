@@ -68,6 +68,21 @@ public class CalioDynamicRegistryManager implements ICalioDynamicRegistryManager
 	private final List<ResourceKey<?>> validatorOrder;
     public static final Set<String> LOADED_NAMESPACES = new HashSet<>();
 
+	// ⚠ eruto: one lock for every write to the dynamic registries' holder maps (2026-09-28).
+	//
+	// S2CDynamicRegistryPacket decodes on the Netty IO thread. Decoding an entry that names entries of
+	// another registry (an origin naming powers, a layer naming origins) goes through
+	// MappedRegistryMixin#calio$getOrCreateHolderOrThrow, which puts a stand-alone holder into the
+	// *live* registry's `byKey` (a plain HashMap) and reads it straight back. Meanwhile the main thread
+	// runs handle() for the previous packet and writes into the same maps (reset + registerMapping).
+	// The per-registry lock taken in handle() does not help: the decoder never takes it, and one packet
+	// touches several registries. When both threads write at once, the get() right after the put()
+	// can return null; UnitListCodec then adds null to an ImmutableList and the login fails with a
+	// NullPointerException (about 1 login in 100 in our logs; logging in again works).
+	//
+	// Lock order: this lock first, then the per-registry lock. Nothing takes them the other way round.
+	public static final Object SYNC_LOCK = new Object();
+
 	public CalioDynamicRegistryManager() {
         this.registries = new HashMap<>();
 		this.definitions = new HashMap<>();

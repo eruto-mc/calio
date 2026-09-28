@@ -1,6 +1,7 @@
 package io.github.edwinmindcraft.calio.mixin;
 
 import io.github.edwinmindcraft.calio.common.access.MappedRegistryAccess;
+import io.github.edwinmindcraft.calio.common.registry.CalioDynamicRegistryManager;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderOwner;
 import net.minecraft.core.MappedRegistry;
@@ -25,8 +26,12 @@ public abstract class MappedRegistryMixin<T> implements MappedRegistryAccess<T> 
     public Holder<T> calio$getOrCreateHolderOrThrow(ResourceKey<T> key) {
         if (this.unregisteredIntrusiveHolders != null)
             throw new IllegalStateException("This registry can't create new holders without value");
-        if (!this.byKey.containsKey(key))
-            this.byKey.put(key, Holder.Reference.createStandAlone(this.holderOwner(), key));
-        return this.byKey.get(key);
+        // ⚠ eruto: check-put-get is not atomic on a HashMap, and packet decoders call this from the
+        // Netty IO thread while the main thread writes the same map (see CalioDynamicRegistryManager.SYNC_LOCK).
+        synchronized (CalioDynamicRegistryManager.SYNC_LOCK) {
+            if (!this.byKey.containsKey(key))
+                this.byKey.put(key, Holder.Reference.createStandAlone(this.holderOwner(), key));
+            return this.byKey.get(key);
+        }
     }
 }

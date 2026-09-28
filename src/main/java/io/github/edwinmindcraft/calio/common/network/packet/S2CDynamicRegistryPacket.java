@@ -83,6 +83,13 @@ public abstract sealed class S2CDynamicRegistryPacket<T> permits S2CDynamicRegis
 	}
 
 	private static <T, V extends S2CDynamicRegistryPacket<T>> V decodeWithBuilder(FriendlyByteBuf buffer, Builder<T, V> decoder) {
+		// ⚠ eruto: decode under the same lock handle() writes under (see CalioDynamicRegistryManager.SYNC_LOCK).
+		synchronized (CalioDynamicRegistryManager.SYNC_LOCK) {
+			return decodeWithBuilderLocked(buffer, decoder);
+		}
+	}
+
+	private static <T, V extends S2CDynamicRegistryPacket<T>> V decodeWithBuilderLocked(FriendlyByteBuf buffer, Builder<T, V> decoder) {
 		CalioDynamicRegistryManager cdrm = CalioDynamicRegistryManager.getInstance(null);
 		ResourceKey<Registry<T>> registryKey = ResourceKey.createRegistryKey(buffer.readResourceLocation());
 		MappedRegistry<T> registry = new MappedRegistry<>(registryKey, Lifecycle.experimental(), false);
@@ -103,11 +110,14 @@ public abstract sealed class S2CDynamicRegistryPacket<T> permits S2CDynamicRegis
 	public void handle(Supplier<NetworkEvent.Context> handler) {
 		handler.get().enqueueWork(() -> {
 			CalioDynamicRegistryManager instance = CalioDynamicRegistryManager.getInstance(null);
-			synchronized (instance.getLock(this.key)) {
-				WritableRegistry<T> target = this.start == 0 ? instance.reset(this.key) : instance.get(this.key);
-				for (Map.Entry<ResourceKey<T>, T> entry : this.registry.entrySet())
-					target.registerMapping(this.registry.getId(entry.getValue()), entry.getKey(), entry.getValue(), Lifecycle.experimental());
-				instance.dump();
+			// ⚠ eruto: SYNC_LOCK first, then the per-registry lock (see CalioDynamicRegistryManager.SYNC_LOCK).
+			synchronized (CalioDynamicRegistryManager.SYNC_LOCK) {
+				synchronized (instance.getLock(this.key)) {
+					WritableRegistry<T> target = this.start == 0 ? instance.reset(this.key) : instance.get(this.key);
+					for (Map.Entry<ResourceKey<T>, T> entry : this.registry.entrySet())
+						target.registerMapping(this.registry.getId(entry.getValue()), entry.getKey(), entry.getValue(), Lifecycle.experimental());
+					instance.dump();
+				}
 			}
 		});
 		if (this instanceof S2CDynamicRegistryPacket.Login<T>)
